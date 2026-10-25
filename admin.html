@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lodge admin</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="root"></div>
+<div id="toast" class="toast" hidden></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script>
+const C=window.LODGE_CONFIG,sb=supabase.createClient(C.SUPABASE_URL,C.SUPABASE_KEY);
+const $=s=>document.querySelector(s),inr=n=>'₹'+Number(n||0).toLocaleString('en-IN');
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const L={available:'Available',held:'On hold',booked:'Booked',maintenance:'Maintenance',pending:'Pending',approved:'Approved',rejected:'Rejected',checked_in:'Checked in',checked_out:'Checked out'};
+const chip=s=>`<span class="chip ${s}">${L[s]||s}</span>`;
+const TYPES=['Standard','Deluxe','Family Suite','VIP'];
+let tab='dash',R=[],B=[],S=[],LD={name:'Lodge',address:'',phone:''},unread=0;
+function toast(m){const t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toast.h);toast.h=setTimeout(()=>t.hidden=true,3500)}
+const ok=(r,m)=>{if(r.error){toast('Error: '+r.error.message);return false}if(m)toast(m);return true};
+
+/* ---------- login ---------- */
+function loginView(msg=''){
+  $('#root').innerHTML=`<div class="wrap" style="max-width:400px"><div class="panel"><h2>Admin login</h2>${msg?`<p class="note">${esc(msg)}</p>`:''}
+  <label>Email<input id="le" type="email" autocomplete="username"></label>
+  <label>Password<input id="lp" type="password" autocomplete="current-password"></label>
+  <button class="btn" data-act="login" style="margin-top:14px">Log in</button></div></div>`;
+}
+async function login(){
+  const r=await sb.auth.signInWithPassword({email:$('#le').value.trim(),password:$('#lp').value});
+  if(r.error)return loginView('Wrong email or password.');
+  enter();
+}
+async function enter(){
+  const a=await sb.from('admins').select('user_id').maybeSingle();
+  if(!a.data){await sb.auth.signOut();return loginView('This account is not an admin.')}
+  await loadAll();shell();subscribe();
+}
+async function loadAll(){
+  const [r,b,s,l]=await Promise.all([sb.from('rooms').select('*').order('room_no'),sb.from('bookings').select('*,rooms(room_no,type)').order('created_at',{ascending:false}),sb.from('staff').select('*').order('id'),sb.from('lodge').select('*').single()]);
+  R=r.data||[];B=b.data||[];S=s.data||[];LD=l.data||LD;
+}
+let subscribed=false;
+function subscribe(){
+  if(subscribed)return;subscribed=true;
+  sb.channel('admin-live')
+   .on('postgres_changes',{event:'*',schema:'public',table:'bookings'},async p=>{if(p.eventType=='INSERT'){unread++;toast(`New booking: ${p.new.guest_name}, ${inr(p.new.amount)}`)}refresh()})
+   .on('postgres_changes',{event:'*',schema:'public',table:'rooms'},refresh)
+   .on('postgres_changes',{event:'*',schema:'public',table:'staff'},refresh)
+   .subscribe();
+}
+async function refresh(){await loadAll();if(!document.activeElement||!document.activeElement.matches('input,select,textarea'))shell()}
+
+/* ---------- views ---------- */
+const V={
+dash(){
+  const c=s=>R.filter(r=>r.status==s).length,bs=s=>B.filter(b=>b.status==s).length;
+  const earn=B.filter(b=>b.status=='checked_out').reduce((a,b)=>a+(b.amount||0),0);
+  const X=[['Total rooms',R.length],['Booked',c('booked')],['Available',c('available')],['On hold',c('held')],['Occupancy',(R.length?Math.round(c('booked')/R.length*100):0)+'%'],['Pending bookings',bs('pending')],['Active guests',bs('checked_in')],['Checked out',bs('checked_out')],['Earnings (checked out)',inr(earn)],['Total staff',S.length],['Present today',S.filter(s=>s.attendance=='Present').length],['Absent today',S.filter(s=>s.attendance=='Absent').length]];
+  return `<div class="stats">${X.map(x=>`<div class="stat"><span class="mu">${x[0]}</span><b>${x[1]}</b></div>`).join('')}</div>`;
+},
+book(){
+  const acts=b=>{const a=(k,l,c='')=>`<button class="btn sm ${c}" data-act="${k}" data-id="${b.id}">${l}</button> `;
+    return (b.status=='pending'?a('approved','Approve')+a('rejected','Reject','red'):b.status=='approved'?a('checked_in','Check in'):b.status=='checked_in'?a('checked_out','Check out','ghost'):'')+a('delbook','Delete','ghost')};
+  return `<div class="panel scroll"><div class="row"><h3>Bookings (${B.length})</h3><button class="btn red sm" data-act="clear">Clear history</button></div>
+  <table><tr><th>Guest</th><th>Room</th><th>Dates</th><th>Amount</th><th>ID number</th><th>Status</th><th>Actions</th></tr>${B.map(b=>`<tr><td>${esc(b.guest_name)}<div class="mu">${esc(b.phone)} · code ${esc(b.code)}</div></td><td>${b.rooms?b.rooms.room_no:'-'}</td><td>${b.check_in} to ${b.check_out}</td><td>${inr(b.amount)}</td><td>${esc(b.id_number)||'-'}</td><td>${chip(b.status)}</td><td>${acts(b)}</td></tr>`).join('')||'<tr><td colspan="7" class="mu">No bookings yet.</td></tr>'}</table></div>`;
+},
+rooms(){
+  return `<div class="panel"><h3 style="margin-bottom:8px">Add a room</h3><div class="fm"><label>Room number<input id="nr" type="number"></label><label>Type<select id="nt">${TYPES.map(t=>`<option>${t}</option>`).join('')}</select></label><label>AC<select id="na"><option value="ac">AC</option><option value="non">Non-AC</option></select></label><label>Guests allowed<input id="nc" type="number" min="1"></label><label>Price per day (₹)<input id="np" type="number" min="1"></label><button class="btn" data-act="addroom">Add room</button></div></div>
+  <div class="panel scroll"><h3 style="margin-bottom:8px">All rooms (${R.length})</h3><table><tr><th>Room</th><th>Type</th><th>AC</th><th>Guests</th><th>Price/day</th><th>Status</th><th></th></tr>${R.map(r=>`<tr><td><b>${r.room_no}</b></td>
+  <td><select data-r="${r.id}:type">${TYPES.map(t=>`<option ${r.type==t?'selected':''}>${t}</option>`).join('')}</select></td>
+  <td><select data-r="${r.id}:is_ac"><option value="ac" ${r.is_ac?'selected':''}>AC</option><option value="non" ${r.is_ac?'':'selected'}>Non-AC</option></select></td>
+  <td><input type="number" min="1" value="${r.capacity}" data-r="${r.id}:capacity"></td><td><input type="number" min="1" value="${r.price}" data-r="${r.id}:price"></td>
+  <td><select data-r="${r.id}:status">${['available','held','booked','maintenance'].map(s=>`<option value="${s}" ${r.status==s?'selected':''}>${L[s]}</option>`).join('')}</select></td>
+  <td><button class="btn sm red" data-act="delroom" data-id="${r.id}">Delete</button></td></tr>`).join('')}</table></div>`;
+},
+staff(){
+  return `<div class="panel"><h3 style="margin-bottom:8px">Add a worker</h3><div class="fm"><label>Name<input id="sn"></label><label>Mobile<input id="sm" inputmode="tel"></label><label>Position<input id="sp"></label><label>Salary (₹ per month)<input id="ss" type="number" min="0"></label><button class="btn" data-act="addstaff">Add worker</button></div></div>
+  <div class="panel scroll"><h3 style="margin-bottom:8px">Workers (${S.length})</h3><table><tr><th>Name</th><th>Mobile</th><th>Position</th><th>Salary</th><th>Today</th><th></th></tr>${S.map(s=>`<tr><td>${esc(s.name)}</td><td>${esc(s.mobile)||'-'}</td><td>${esc(s.position)||'-'}</td><td>${s.salary?inr(s.salary):'-'}</td><td><select data-s="${s.id}">${['Present','Absent','Leave'].map(x=>`<option ${s.attendance==x?'selected':''}>${x}</option>`).join('')}</select></td><td><button class="btn sm red" data-act="delstaff" data-id="${s.id}">Remove</button></td></tr>`).join('')||'<tr><td colspan="6" class="mu">No workers yet.</td></tr>'}</table></div>`;
+},
+set(){
+  const q=encodeURIComponent(LD.address||'');
+  return `<div class="panel"><h3 style="margin-bottom:8px">Lodge details (shown to customers)</h3><div class="fm"><label>Lodge name<input id="ln" value="${esc(LD.name)}"></label><label>Phone<input id="lp2" value="${esc(LD.phone)}"></label></div>
+  <label>Full address (used for the map and directions)<input id="la" value="${esc(LD.address)}"></label><button class="btn" data-act="savelodge" style="margin-top:12px">Save</button>
+  <iframe class="map" title="Map preview" loading="lazy" src="https://www.google.com/maps?q=${q}&output=embed"></iframe></div>
+  <div class="panel"><h3 style="margin-bottom:8px">Change my password</h3><label>New password (at least 8 characters)<input id="npw" type="password" autocomplete="new-password"></label><button class="btn" data-act="pw" style="margin-top:12px">Change password</button></div>`;
+}};
+function shell(){
+  const tabs=[['dash','Dashboard'],['book','Bookings'],['rooms','Rooms'],['staff','Staff'],['set','Settings']];
+  $('#root').innerHTML=`<header class="top"><div class="brand">${esc(LD.name)} · Admin</div><button class="ib" data-act="bell" aria-label="New bookings">🔔${unread?`<span class="dot">${unread}</span>`:''}</button><button class="btn ghost sm" data-act="out">Log out</button></header>
+  <main class="wrap"><div class="adm"><nav class="side">${tabs.map(t=>`<button data-tab="${t[0]}" class="${tab==t[0]?'on':''}">${t[1]}</button>`).join('')}</nav><div>${V[tab]()}</div></div></main>`;
+}
+
+/* ---------- actions ---------- */
+document.addEventListener('click',async e=>{
+  const tb=e.target.closest('[data-tab]');if(tb){tab=tb.dataset.tab;return shell()}
+  const a=e.target.closest('[data-act]');if(!a)return;const k=a.dataset.act,id=a.dataset.id;
+  if(k=='login')return login();
+  if(k=='out'){await sb.auth.signOut();subscribed=false;return location.reload()}
+  if(k=='bell'){tab='book';unread=0;return shell()}
+  if(['approved','rejected','checked_in','checked_out'].includes(k)){ok(await sb.from('bookings').update({status:k}).eq('id',id),'Booking updated');return refresh()}
+  if(k=='delbook'){if(!confirm('Delete this booking permanently?'))return;ok(await sb.from('bookings').delete().eq('id',id),'Booking deleted');return refresh()}
+  if(k=='clear'){if(prompt('This permanently deletes all checked-out and rejected bookings. Type DELETE to confirm.')!=='DELETE')return;ok(await sb.from('bookings').delete().in('status',['checked_out','rejected']),'History cleared');return refresh()}
+  if(k=='addroom'){const n=+$('#nr').value,c=+$('#nc').value,p=+$('#np').value;if(!n||!c||!p)return toast('Enter room number, guests allowed and price.');
+    if(ok(await sb.from('rooms').insert({room_no:n,type:$('#nt').value,is_ac:$('#na').value=='ac',capacity:c,price:p}),'Room added'))refresh();return}
+  if(k=='delroom'){if(!confirm('Delete this room and all its booking history?'))return;ok(await sb.from('rooms').delete().eq('id',id),'Room deleted');return refresh()}
+  if(k=='addstaff'){const n=$('#sn').value.trim();if(!n)return toast('Enter the worker name.');
+    if(ok(await sb.from('staff').insert({name:n,mobile:$('#sm').value,position:$('#sp').value,salary:+$('#ss').value||0}),'Worker added'))refresh();return}
+  if(k=='delstaff'){if(!confirm('Remove this worker?'))return;ok(await sb.from('staff').delete().eq('id',id),'Worker removed');return refresh()}
+  if(k=='savelodge'){ok(await sb.from('lodge').update({name:$('#ln').value.trim()||LD.name,address:$('#la').value.trim(),phone:$('#lp2').value.trim()}).eq('id',1),'Saved. Customers see it now.');return refresh()}
+  if(k=='pw'){const v=$('#npw').value;if(v.length<8)return toast('Use at least 8 characters.');ok(await sb.auth.updateUser({password:v}),'Password changed');$('#npw').value=''}
+});
+document.addEventListener('change',async e=>{
+  const t=e.target,d=t.dataset;
+  if(d.r){const [id,k]=d.r.split(':');let v=t.value;if(k=='is_ac')v=v=='ac';if(k=='price'||k=='capacity'){v=+v;if(!(v>0)){toast('Enter a number above zero.');return refresh()}}
+    ok(await sb.from('rooms').update({[k]:v}).eq('id',id),'Room updated. Customers see it now.')}
+  if(d.s)ok(await sb.from('staff').update({attendance:t.value}).eq('id',d.s),'Attendance saved');
+});
+document.addEventListener('keydown',e=>{if(e.key=='Enter'&&$('#lp')&&document.activeElement.id=='lp')login()});
+(async()=>{const {data}=await sb.auth.getSession();data.session?enter():loginView()})();
+</script>
+</body>
+</html>

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lodge</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top"><div class="brand" id="brand">Lodge</div></header>
+<main class="wrap">
+  <div id="app"><p class="mu">Loading rooms…</p></div>
+  <h2 style="margin-top:28px">Track my booking</h2>
+  <div class="panel">
+    <div class="fm"><label>Booking code<input id="tc"></label><label>Phone number<input id="tp" inputmode="tel"></label><button class="btn" data-a="track">Check status</button></div>
+    <div id="tr"></div>
+  </div>
+  <div id="find"></div>
+</main>
+<div id="modal"></div>
+<div id="toast" class="toast" hidden></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script>
+const C=window.LODGE_CONFIG,sb=supabase.createClient(C.SUPABASE_URL,C.SUPABASE_KEY);
+const $=s=>document.querySelector(s),inr=n=>'₹'+Number(n).toLocaleString('en-IN');
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const L={available:'Available',held:'On hold',booked:'Booked',maintenance:'Maintenance',pending:'Pending',approved:'Approved',rejected:'Rejected',checked_in:'Checked in',checked_out:'Checked out'};
+const chip=s=>`<span class="chip ${s}">${L[s]||s}</span>`;
+const TYPES=['Standard','Deluxe','Family Suite','VIP'];
+const feats=r=>[r.is_ac?'AC':'Fan','TV',...(r.is_ac?['Wi-Fi']:[]),...(r.type=='VIP'?['Balcony','Mini bar']:[]),...(r.type=='Family Suite'?['Extra beds']:[])];
+let rooms=[],lodge={name:'Lodge',address:'',phone:''},f={type:'',ac:'',price:'',guests:'',only:false};
+function toast(m){const t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toast.h);toast.h=setTimeout(()=>t.hidden=true,3500)}
+
+async function load(){
+  const [r,l]=await Promise.all([sb.from('rooms').select('*').order('room_no'),sb.from('lodge').select('*').single()]);
+  if(r.error||l.error){$('#app').innerHTML='<div class="note">Could not load the lodge. Check the two values in config.js.</div>';return}
+  rooms=r.data;lodge=l.data;draw();
+}
+function draw(){
+  document.title=lodge.name;$('#brand').textContent=lodge.name;
+  const free=rooms.filter(r=>r.status=='available').length;
+  const list=rooms.filter(r=>(!f.type||r.type==f.type)&&(!f.ac||(f.ac=='ac')==r.is_ac)&&(!f.price||r.price<=+f.price)&&(!f.guests||r.capacity>=+f.guests)&&(!f.only||r.status=='available'));
+  const sel=(k,v)=>f[k]==v?'selected':'';
+  $('#app').innerHTML=`<section class="hero"><div><h1>Stay close, sleep well.</h1><p class="mu">${free} of ${rooms.length} rooms are free right now. Pick a key to book, or browse below.</p></div>
+  <div class="rack"><b>Key board</b><div class="keys">${rooms.map(r=>`<button class="key ${r.status}" data-a="book" data-id="${r.id}" ${r.status!='available'?'disabled':''}>${r.room_no}<small>${r.status=='available'?inr(r.price):L[r.status]}</small></button>`).join('')}</div></div></section>
+  <h2>Rooms</h2><div class="bar">
+  <select data-f="type"><option value="">All types</option>${TYPES.map(t=>`<option ${sel('type',t)}>${t}</option>`).join('')}</select>
+  <select data-f="ac"><option value="">AC or Non-AC</option><option value="ac" ${sel('ac','ac')}>AC</option><option value="non" ${sel('ac','non')}>Non-AC</option></select>
+  <select data-f="price"><option value="">Any price</option>${[1000,2000,3000,5000].map(p=>`<option value="${p}" ${sel('price',String(p))}>Up to ${inr(p)}</option>`).join('')}</select>
+  <select data-f="guests"><option value="">Any capacity</option>${[2,3,4,5].map(n=>`<option value="${n}" ${sel('guests',String(n))}>${n}+ guests</option>`).join('')}</select>
+  <label><input type="checkbox" data-f="only" ${f.only?'checked':''}> Available only</label></div>
+  <div class="grid">${list.map(r=>`<article class="card"><div class="ph ${r.type.replace(' ','-')}">${r.room_no}</div><div class="cb"><div class="row"><b>${r.is_ac?'AC':'Non-AC'} ${esc(r.type)}</b>${chip(r.status)}</div><div class="mu">Sleeps ${r.capacity}</div><div class="tags">${feats(r).map(x=>`<span>${x}</span>`).join('')}</div><div class="row"><span class="price">${inr(r.price)}<span class="mu" style="font-size:14px;font-weight:400"> /day</span></span><button class="btn sm" data-a="book" data-id="${r.id}" ${r.status!='available'?'disabled':''}>Book</button></div></div></article>`).join('')||'<p class="mu">No rooms match these filters.</p>'}</div>`;
+  const q=encodeURIComponent(lodge.address||'');
+  $('#find').innerHTML=`<h2 style="margin-top:28px">Find us</h2><div class="panel"><p style="margin-top:0"><b>${esc(lodge.name)}</b><br>${esc(lodge.address)}<br><span class="mu">Call: ${esc(lodge.phone)}</span></p><iframe class="map" title="Lodge location" loading="lazy" src="https://www.google.com/maps?q=${q}&output=embed"></iframe><a class="btn" style="display:inline-block;text-decoration:none" href="https://www.google.com/maps/dir/?api=1&destination=${q}" target="_blank" rel="noopener">Get directions in Google Maps</a></div>`;
+}
+function openBook(id){
+  const r=rooms.find(x=>x.id==id);if(!r)return;
+  const d=new Date(),t=new Date(Date.now()+864e5),iso=x=>x.toISOString().slice(0,10);
+  $('#modal').innerHTML=`<div class="modal"><div class="mb"><h2>Book room ${r.room_no}</h2><p class="mu">${r.is_ac?'AC':'Non-AC'} ${esc(r.type)} · ${inr(r.price)} per day · sleeps ${r.capacity}</p>
+  <label>Full name<input id="g"></label><div class="two"><label>Phone<input id="ph" inputmode="tel"></label><label>Email<input id="em" type="email"></label></div>
+  <label>Address<input id="ad"></label><label>ID number (Aadhaar or other)<input id="idn"></label>
+  <div class="two"><label>Check-in<input id="ci" type="date" min="${iso(d)}" value="${iso(d)}"></label><label>Check-out<input id="co" type="date" min="${iso(t)}" value="${iso(t)}"></label></div>
+  <label>Guests<input id="gu" type="number" min="1" max="${r.capacity}" value="1"></label><label>Special requests<textarea id="rq" rows="2"></textarea></label>
+  <div class="row" style="margin-top:16px"><button class="btn ghost" data-a="close">Cancel</button><button class="btn" data-a="send" data-id="${r.id}">Send booking request</button></div></div></div>`;
+}
+async function send(id){
+  const g=$('#g').value.trim(),ph=$('#ph').value.trim(),ci=$('#ci').value,co=$('#co').value;
+  if(!g||!ph)return toast('Please enter your name and phone number.');
+  if(!ci||!co||co<=ci)return toast('Check-out must be after check-in.');
+  const r=await sb.rpc('request_booking',{p_room:id,p_name:g,p_phone:ph,p_email:$('#em').value,p_address:$('#ad').value,p_idnum:$('#idn').value,p_in:ci,p_out:co,p_guests:+$('#gu').value||1,p_req:$('#rq').value});
+  if(r.error){$('#modal').innerHTML='';load();return toast(/duplicate|available/i.test(r.error.message)?'Sorry, this room was just taken. Please choose another.':'Could not book: '+r.error.message)}
+  $('#modal').innerHTML=`<div class="modal"><div class="mb"><h2>Request sent</h2><p>Your booking code is <b style="font-size:26px">${esc(r.data)}</b></p><p class="mu">Save this code. Use it with your phone number under “Track my booking” to see if the lodge approved it.</p><button class="btn" data-a="close">Close</button></div></div>`;
+  load();
+}
+async function track(){
+  const r=await sb.rpc('track_booking',{p_code:$('#tc').value.trim(),p_phone:$('#tp').value.trim()});
+  $('#tr').innerHTML=r.error?'<p class="note">Could not check right now.</p>':r.data.length?`<div class="scroll"><table><tr><th>Code</th><th>Room</th><th>Dates</th><th>Amount</th><th>Status</th></tr>${r.data.map(b=>`<tr><td>${esc(b.code)}</td><td>${b.room_no}</td><td>${b.check_in} to ${b.check_out}</td><td>${inr(b.amount)}</td><td>${chip(b.status)}</td></tr>`).join('')}</table></div>`:'<p class="mu">No booking found. Check the code and phone number.</p>';
+}
+document.addEventListener('click',e=>{
+  const a=e.target.closest('[data-a]');if(!a)return;const k=a.dataset.a;
+  if(k=='book')openBook(a.dataset.id);if(k=='close')$('#modal').innerHTML='';
+  if(k=='send')send(+a.dataset.id);if(k=='track')track();
+});
+document.addEventListener('change',e=>{const t=e.target;if(t.dataset.f){f[t.dataset.f]=t.type=='checkbox'?t.checked:t.value;draw()}});
+sb.channel('public-live').on('postgres_changes',{event:'*',schema:'public',table:'rooms'},load).on('postgres_changes',{event:'*',schema:'public',table:'lodge'},load).subscribe();
+load();
+</script>
+</body>
+</html>
